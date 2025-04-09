@@ -1,0 +1,27 @@
+Package: Habitools
+Type: Package
+Title: Tools for assisting in everyday analysis
+Version: 0.0.0.1
+Authors: Habtat
+Author: Habitat analyst team
+Maintainer: Habitat analyst team <info@habitat-nature.com>
+Description: Series of functions that makes it easy to load and prepare data from our internal cloud storage, with some additional utilities.
+License: file LICENSE
+Encoding: UTF-8
+LazyData: true
+LazyDataCompression: xz
+RoxygenNote: 7.3.2
+Depends: 
+    R (>= 4.0.0)
+Imports: 
+    checkmate,
+    dplyr,
+    ggplot2,
+    magrittr,
+    sf,
+    terra,
+    testthat,
+    cli,
+    duckdbfs,
+    AzureStor
+Remotes: git::https://github.com/cboettig/duckdbfs.git

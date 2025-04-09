@@ -1,0 +1,650 @@
+/////////////////////////////////////////////////////////
+//     SCRIPT TO CALCULATE PHENOSPECTRAL SIMILARITY    //
+//                  AUTHOR: Nikki A Moore              //
+//                                                     //
+//       Adapted from script by Patrick Osei Darko     //
+/////////////////////////////////////////////////////////
+
+// Define  variables
+var AOI = MSB_Extent // area of interest 
+var CLOUD_FILTER = 20 
+var CLD_PRB_THRESH = 50 // threshold for cloud cover
+var NIR_DRK_THRESH = 0.15 // threshold for shadows cover
+var CLD_PRJ_DIST = 1
+var BUFFER = 50
+
+// FUNCTIONS
+/////////////////////////////////////////////////
+
+// function to get S2 data for a specific month
+function get_s2_sr_cld_col(aoi, start, end, month){
+    // Import and filter S2
+    var s2_sr_col = (ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+        .filterBounds(aoi)
+        .filterDate(start, end)
+        .filter(ee.Filter.lte('CLOUDY_PIXEL_PERCENTAGE', CLOUD_FILTER)))
+        
+        
+ print(year, month, 'image_collection',s2_sr_col)
+    // Import and filter s2cloudless.
+    var s2_cloudless_col = (ee.ImageCollection('COPERNICUS/S2_CLOUD_PROBABILITY')
+        .filterBounds(aoi)
+        .filterDate(start, end))
+    
+    // Join the filtered s2cloudless collection to the SR collection by the 'system:index' property.
+    return ee.ImageCollection(ee.Join.saveFirst('s2cloudless').apply({
+        'primary': s2_sr_col,
+        'secondary': s2_cloudless_col,
+        'condition': ee.Filter.equals({
+            'leftField': 'system:index',
+            'rightField': 'system:index'
+        })
+    }))
+}
+
+// CLOUD COMPONENTS
+// Define a function to add the s2cloudless probability layer and derived cloud mask as bands to an S2 SR image input.
+function add_cloud_bands(img){
+    // Get s2cloudless image, subset the probability band.
+    var cld_prb = ee.Image(img.get('s2cloudless')).select('probability')
+    // Condition s2cloudless by the probability threshold value.
+    var is_cloud = cld_prb.gt(CLD_PRB_THRESH).rename('clouds')
+    // Add the cloud probability layer and cloud mask as image bands.
+    return img.addBands(ee.Image([cld_prb, is_cloud]))
+}
+
+// SHADOW COMPONENTS
+function add_shadow_bands(img){
+    // Identify water pixels from the SCL band.
+    var not_water = img.select('SCL').neq(6)
+    // var not_water = img.normalizedDifference(['B3', 'B8']).lt(0.2) // Use this if you are using the TOA version
+    // Identify dark NIR pixels that are not water (potential cloud shadow pixels).
+    var SR_BAND_SCALE = 1e4
+    var dark_pixels = img.select('B8').lt(NIR_DRK_THRESH*SR_BAND_SCALE).multiply(not_water).rename('dark_pixels')
+    // Determine the direction to project cloud shadow from clouds (assumes UTM projection).
+    var shadow_azimuth = ee.Number(90).subtract(ee.Number(img.get('MEAN_SOLAR_AZIMUTH_ANGLE')));
+    // Project shadows from clouds for the distance specified by the CLD_PRJ_DIST input.
+    var cld_proj = (img.select('clouds').directionalDistanceTransform(shadow_azimuth, CLD_PRJ_DIST*10)
+        .reproject({'crs': img.select(0).projection(), 'scale': 100})
+        .select('distance')
+        .mask()
+        .rename('cloud_transform'))
+    // Identify the intersection of dark pixels with cloud shadow projection.
+    var shadows = cld_proj.multiply(dark_pixels).rename('shadows')
+    // Add dark pixels, cloud projection, and identified shadows as image bands.
+    return img.addBands(ee.Image([dark_pixels, cld_proj, shadows]))
+}
+
+function add_cld_shdw_mask(img){
+    // Add cloud component bands.
+    var img_cloud = add_cloud_bands(img)
+    // Add cloud shadow component bands.
+    var img_cloud_shadow = add_shadow_bands(img_cloud)
+
+    // Combine cloud and shadow mask, set cloud and shadow as value 1, else 0.
+    var is_cld_shdw = img_cloud_shadow.select('clouds').add(img_cloud_shadow.select('shadows')).gt(0)
+
+    // Remove small cloud-shadow patches and dilate remaining pixels by BUFFER input.
+    // 20 m scale is for speed, and assumes clouds don't require 10 m precision.
+    var is_cld_shdw2 = (is_cld_shdw.focal_min(2).focal_max(BUFFER*2/20)
+        .reproject({'crs': img.select([0]).projection(), 'scale': 20})
+        .rename('cloudmask'))
+
+    // Add the final cloud-shadow mask to the image.
+    return img_cloud_shadow.addBands(is_cld_shdw2)
+}
+
+function apply_cld_shdw_mask(img){
+    //# Subset the cloudmask band and invert it so clouds/shadow are 0, else 1.
+    var not_cld_shdw = img.select('cloudmask').not()
+
+   // # Subset reflectance bands and update their masks, return the result.
+    return img.select('B.*').updateMask(not_cld_shdw)
+}
+
+// EXTRACT MEAN SPECTRUM PER POLYGON
+function reduceRegions_Forest_stands(image) {
+  
+  var zonalStats = image.reduceRegions({
+    collection: Target_Ecological_Unit,
+    reducer: ee.Reducer.mean(),
+    scale: 20,
+});
+    return zonalStats
+      .map(function(feature) {
+      // return feature
+      //     .select(['ORIGINE','REF_ID','SHAPE_Area','B2','B3','B4','B5','B6','B7','B8','B8A','B11','B12'],
+      //     ['PolygonName','FID','Area_sqm','B2','B3','B4','B5','B6','B7','B8','B8A','B11','B12'])
+
+        return feature
+          .select(['poly_num', 'ref_id', 'B2','B3','B4','B5','B6','B7','B8','B8A','B11','B12'],
+          ['PolygonName','REF_ID','B2','B3','B4','B5','B6','B7','B8','B8A','B11','B12'])
+         set({
+        'imgID': image.id(),
+        'date': image.date().format('YYYY-MM-dd')
+         
+});
+  });
+
+}
+
+function reduceRegions_Baseline(image) {
+  var zonalStats2 = image.reduceRegions({
+    collection: Reference,
+    reducer: ee.Reducer.mean(),
+    scale: 20,
+    crs: 'EPSG:4326'
+  });
+  
+    return zonalStats2
+      .map(function(feature) {
+      return feature
+          
+          .select(['poly_num', 'ref_id', 'B2','B3','B4','B5','B6','B7','B8','B8A','B11','B12'],
+          ['ReferenceName', 'REF_ID', 'RB2','RB3','RB4','RB5','RB6','RB7','RB8','RB8A','RB11','RB12'])
+        set({
+        'imgID': image.id(),
+        'date': image.date().format('YYYY-MM-dd')
+         
+  });
+  });
+}
+
+
+// CLEAN JOIN
+function cleanJoin(feature){
+    return ee.Feature(feature.get('primary')).copyProperties(feature.get('secondary'));
+  }
+  
+
+// FOR EACH YEAR 
+/////////////////////////////////////////////////
+for (var y = 2017; y <= 2024; y++){
+  
+  // Convert year to ee string
+  var year = ee.String(ee.Number(y));
+  
+  // DEFINE DATES
+  /////////////////////////////////////////////////
+  // June Date
+  var START_JUNE = ee.String(year).cat('-06-01');
+  var END_JUNE = ee.String(year).cat('-06-30');
+  
+  // July Date
+  var START_JULY = ee.String(year).cat('-07-01');
+  var END_JULY = ee.String(year).cat('-07-31');
+  
+  // August Date
+  var START_AUGUST = ee.String(year).cat('-08-01');
+  var END_AUGUST = ee.String(year).cat('-08-31');
+  
+  // September Date
+  var START_SEPTEMBER = ee.String(year).cat('-09-01');
+  var END_SEPTEMBER = ee.String(year).cat('-09-30');
+  
+  // Create strings with year_month_
+  var jun_str = year.cat('_June')
+  var jul_str = year.cat('_July')
+  var aug_str = year.cat('_Aug')
+  var sept_str = year.cat('_Sept')
+  
+  /////////////////////////////////////////////////////////////////////
+  // GET S2 DATA FOR THAT YEAR & CORRECT FOR CLOUD COVER / SHADOWS
+  /////////////////////////////////////////////////////////////////////
+  
+  // JUNE
+  /////////////////////////////////////////////////
+  var MONTH = ee.String('June');
+  
+  var s2_sr_cld_col_eval_june = get_s2_sr_cld_col(AOI, START_JUNE, END_JUNE, MONTH)
+  
+  var s2_sr_cld_col_june = get_s2_sr_cld_col(AOI, START_JUNE, END_JUNE, MONTH)
+  var s2_sr_img_june = s2_sr_cld_col_june.map(add_cld_shdw_mask)
+                               .map(apply_cld_shdw_mask)
+                               
+                               
+                               
+  
+  // JULY
+  /////////////////////////////////////////////////
+  var MONTH = ee.String('July');
+  
+  var s2_sr_cld_col_eval_july = get_s2_sr_cld_col(AOI, START_JULY, END_JULY, MONTH)
+  
+  var s2_sr_cld_col_july = get_s2_sr_cld_col(AOI, START_JULY, END_JULY, MONTH)
+  var s2_sr_img_july = s2_sr_cld_col_july.map(add_cld_shdw_mask)
+                               .map(apply_cld_shdw_mask)
+  
+  // AUGUST
+  ////////////////////////////////////////////////////////////////////
+  var MONTH = ee.String('August');
+  
+  var s2_sr_cld_col_eval_august = get_s2_sr_cld_col(AOI, START_AUGUST, END_AUGUST, MONTH)
+  
+  var s2_sr_cld_col_august = get_s2_sr_cld_col(AOI, START_AUGUST, END_AUGUST, MONTH)
+  var s2_sr_img_august = s2_sr_cld_col_august.map(add_cld_shdw_mask)
+                               .map(apply_cld_shdw_mask)
+  
+  // SEPTEMBER
+  //////////////////////////////////////////////////////////////////////
+  var MONTH = ee.String('September');
+  
+  var s2_sr_cld_col_eval_september = get_s2_sr_cld_col(AOI, START_SEPTEMBER, END_SEPTEMBER, MONTH)
+  
+  var s2_sr_cld_col_september = get_s2_sr_cld_col(AOI, START_SEPTEMBER, END_SEPTEMBER, MONTH)
+  var s2_sr_img_september = s2_sr_cld_col_september.map(add_cld_shdw_mask)
+                               .map(apply_cld_shdw_mask)
+  
+  ///////////////////////////////////////////////////////////////////
+  
+  
+  // CLIP S2 RASTER TO POLYGONS 
+  ///////////////////////////////////////////////////////////////////
+  var fc_targ = ee.FeatureCollection(Target_Ecological_Unit) 
+  var fc_ref = ee.FeatureCollection(Reference) 
+  
+  var mosaic_img_june = s2_sr_img_june.mosaic();
+  var clipped_mosaic_june_targ = mosaic_img_june.clipToCollection(fc_targ);
+  var clipped_mosaic_june_ref = mosaic_img_june.clipToCollection(fc_ref);
+  
+  var mosaic_img_july = s2_sr_img_july.mosaic();
+  var clipped_mosaic_july_targ = mosaic_img_july.clipToCollection(fc_targ);
+  var clipped_mosaic_july_ref = mosaic_img_july.clipToCollection(fc_ref);
+  
+  var mosaic_img_august = s2_sr_img_august.mosaic();
+  var clipped_mosaic_august_targ = mosaic_img_august.clipToCollection(fc_targ);
+  var clipped_mosaic_august_ref = mosaic_img_august.clipToCollection(fc_ref);
+  
+  var mosaic_img_september = s2_sr_img_september.mosaic();
+  var clipped_mosaic_september_targ = mosaic_img_september.clipToCollection(fc_targ);
+  var clipped_mosaic_september_ref = mosaic_img_september.clipToCollection(fc_ref);
+  ////////////////////////////////////////////////////////////////
+
+
+  ///////////////////////////////////////////////////////////////
+  // CALCULATE MEAN SPECTRUM PER POLYGON & SPECTRAL ANGLE
+  ///////////////////////////////////////////////////////////////
+  
+  var filterd = ee.Filter.equals({
+      leftField: 'REF_ID',
+      rightField: 'REF_ID', 
+    });
+  
+  // JUNE
+  ///////////////////////////////////////////////////////////////
+  
+  // check if there is sentinel2 data for the month within the polygons 
+  var length_targ = ee.List(clipped_mosaic_june_targ.bandNames()).length();
+  var length_ref = ee.List(clipped_mosaic_june_ref.bandNames()).length();
+  var june_empty = (length_targ.lt(ee.Number(1)) == 1 || length_ref.lt(ee.Number(1)))
+  june_empty = ee.Algorithms.IsEqual(june_empty, ee.Number(1))
+    
+    // extract the mean spectrum for each target and ref polygon
+    var S2_reduceRegions_Forest_Stands_june = reduceRegions_Forest_stands(clipped_mosaic_june_targ).filter(ee.Filter.neq('B2', null))
+    var S2_reduceRegions_Baseline_june = reduceRegions_Baseline(clipped_mosaic_june_ref).filter(ee.Filter.neq('RB2', null))
+    // join into a single object 
+    var innerJoin_june = ee.Join.inner();
+    var ForestBaseline_Join_june = innerJoin_june.apply(S2_reduceRegions_Forest_Stands_june, S2_reduceRegions_Baseline_june, filterd);
+    
+    var Forest_Baseline_Joined_Data_june = ForestBaseline_Join_june.map(cleanJoin);
+
+
+    // bands with 'R' in name are the bands from the reference site
+    // compute spectral angle between ref and target sites
+    var ComputeSpectralAngle_june = Forest_Baseline_Joined_Data_june.map(function (feature_june) {
+        
+        var AAA_june= feature_june.getNumber('B2').multiply(feature_june.getNumber('RB2'))
+        .add(feature_june.getNumber('B3').multiply(feature_june.getNumber('RB3')))
+        .add(feature_june.getNumber('B4').multiply(feature_june.getNumber('RB4')))
+        .add(feature_june.getNumber('B5').multiply(feature_june.getNumber('RB5')))
+        .add(feature_june.getNumber('B6').multiply(feature_june.getNumber('RB6')))
+        .add(feature_june.getNumber('B7').multiply(feature_june.getNumber('RB7')))
+        .add(feature_june.getNumber('B8').multiply(feature_june.getNumber('RB8')))
+        .add(feature_june.getNumber('B8A').multiply(feature_june.getNumber('RB8A')))
+        .add(feature_june.getNumber('B11').multiply(feature_june.getNumber('RB11')))
+        .add(feature_june.getNumber('B12').multiply(feature_june.getNumber('RB12')))
+        
+        var BBB_june = feature_june.getNumber('B2').pow(ee.Number(2)) 
+        .add(feature_june.getNumber('B3').pow(ee.Number(2)))
+        .add(feature_june.getNumber('B4').pow(ee.Number(2)))
+        .add(feature_june.getNumber('B5').pow(ee.Number(2)))
+        .add(feature_june.getNumber('B6').pow(ee.Number(2)))
+        .add(feature_june.getNumber('B7').pow(ee.Number(2)))
+        .add(feature_june.getNumber('B8').pow(ee.Number(2)))
+        .add(feature_june.getNumber('B8A').pow(ee.Number(2)))
+        .add(feature_june.getNumber('B11').pow(ee.Number(2)))
+        .add(feature_june.getNumber('B12').pow(ee.Number(2))).sqrt()
+        
+        var CCC_june= feature_june.getNumber('RB2').pow(ee.Number(2))
+        .add(feature_june.getNumber('RB3').pow(ee.Number(2)))
+        .add(feature_june.getNumber('RB4').pow(ee.Number(2)))
+        .add(feature_june.getNumber('RB5').pow(ee.Number(2)))
+        .add(feature_june.getNumber('RB6').pow(ee.Number(2)))
+        .add(feature_june.getNumber('RB7').pow(ee.Number(2)))
+        .add(feature_june.getNumber('RB8').pow(ee.Number(2)))
+        .add(feature_june.getNumber('RB8A').pow(ee.Number(2)))
+        .add(feature_june.getNumber('RB11').pow(ee.Number(2)))
+        .add(feature_june.getNumber('RB12').pow(ee.Number(2))).sqrt()
+        
+        var DDD_june = AAA_june.divide(BBB_june.multiply(CCC_june))
+        
+        // make sure rounding doesn't cause number to be greater than 1
+        var TF = DDD_june.gt(ee.Number(1));
+        TF = ee.Algorithms.IsEqual(TF, ee.Number(1));
+        
+        DDD_june = ee.Algorithms.If(TF, ee.Number(1), ee.Number(DDD_june))
+        
+        
+        
+        DDD_june = ee.Number(DDD_june).acos()
+        
+      return feature_june.set('Jun_SA' , DDD_june
+        
+    )
+       .select(['PolygonName','REF_ID', 'Jun_SA'],
+              ['PolygonName','Ref_id', 'Jun_SA'])
+          
+    });
+    
+    var features_SpectralAngle_june = ComputeSpectralAngle_june.toList(fc_targ.size());
+    var polygons_SpectralAngle_june = features_SpectralAngle_june
+        .map(function (f) { 
+          return ee.Feature(f).set('geometry_type', ee.Feature(f).geometry().type()); })
+        .filter(ee.Filter.equals('geometry_type', 'Polygon'));
+    
+    // put into a single variable 
+    var polygons_SpectralAngle_K_june = ee.FeatureCollection(polygons_SpectralAngle_june);
+    print(year, 'June Target Polygons',features_SpectralAngle_june.size(),polygons_SpectralAngle_K_june.size())
+    
+    // Create unique file name 
+    var filename_june = year.cat('_SpectralAngle_June_IEQM')
+    var filename_june = filename_june.getInfo();
+  
+    Export.table.toDrive({
+        collection: polygons_SpectralAngle_K_june, 
+        description: filename_june, 
+        folder: 'GEE', 
+        fileNamePrefix: filename_june, 
+        fileFormat: 'SHP'
+    })
+
+  
+  // JULY
+  //////////////////////////////////////////////////////////
+  
+  // check if there is sentinel2 data for the month within the polygons 
+  var length_targ = ee.List(clipped_mosaic_july_targ.bandNames()).length();
+  var length_ref = ee.List(clipped_mosaic_july_ref.bandNames()).length();
+  var july_empty = (length_targ.lt(ee.Number(1)) == 1 || length_ref.lt(ee.Number(1)))
+  july_empty = ee.Algorithms.IsEqual(july_empty, ee.Number(1))
+
+    var S2_reduceRegions_Forest_Stands_july = reduceRegions_Forest_stands(clipped_mosaic_july_targ).filter(ee.Filter.neq('B2', null))
+    var S2_reduceRegions_Baseline_july = reduceRegions_Baseline(clipped_mosaic_july_ref).filter(ee.Filter.neq('RB2', null))
+    
+    var innerJoin_july = ee.Join.inner();
+    var ForestBaseline_Join_july = innerJoin_july.apply(S2_reduceRegions_Forest_Stands_july, S2_reduceRegions_Baseline_july, filterd);
+    
+    var Forest_Baseline_Joined_Data_july = ForestBaseline_Join_july.map(cleanJoin);
+      
+    var ComputeSpectralAngle_july = Forest_Baseline_Joined_Data_july.map(function (feature_july) {
+        
+        var AAA_july= feature_july.getNumber('B2').multiply(feature_july.getNumber('RB2'))
+        .add(feature_july.getNumber('B3').multiply(feature_july.getNumber('RB3')))
+        .add(feature_july.getNumber('B4').multiply(feature_july.getNumber('RB4')))
+        .add(feature_july.getNumber('B5').multiply(feature_july.getNumber('RB5')))
+        .add(feature_july.getNumber('B6').multiply(feature_july.getNumber('RB6')))
+        .add(feature_july.getNumber('B7').multiply(feature_july.getNumber('RB7')))
+        .add(feature_july.getNumber('B8').multiply(feature_july.getNumber('RB8')))
+        .add(feature_july.getNumber('B8A').multiply(feature_july.getNumber('RB8A')))
+        .add(feature_july.getNumber('B11').multiply(feature_july.getNumber('RB11')))
+        .add(feature_july.getNumber('B12').multiply(feature_july.getNumber('RB12')))
+        
+        var BBB_july = feature_july.getNumber('B2').pow(ee.Number(2)) 
+        .add(feature_july.getNumber('B3').pow(ee.Number(2)))
+        .add(feature_july.getNumber('B4').pow(ee.Number(2)))
+        .add(feature_july.getNumber('B5').pow(ee.Number(2)))
+        .add(feature_july.getNumber('B6').pow(ee.Number(2)))
+        .add(feature_july.getNumber('B7').pow(ee.Number(2)))
+        .add(feature_july.getNumber('B8').pow(ee.Number(2)))
+        .add(feature_july.getNumber('B8A').pow(ee.Number(2)))
+        .add(feature_july.getNumber('B11').pow(ee.Number(2)))
+        .add(feature_july.getNumber('B12').pow(ee.Number(2))).sqrt()
+        
+        var CCC_july= feature_july.getNumber('RB2').pow(ee.Number(2))
+        .add(feature_july.getNumber('RB3').pow(ee.Number(2)))
+        .add(feature_july.getNumber('RB4').pow(ee.Number(2)))
+        .add(feature_july.getNumber('RB5').pow(ee.Number(2)))
+        .add(feature_july.getNumber('RB6').pow(ee.Number(2)))
+        .add(feature_july.getNumber('RB7').pow(ee.Number(2)))
+        .add(feature_july.getNumber('RB8').pow(ee.Number(2)))
+        .add(feature_july.getNumber('RB8A').pow(ee.Number(2)))
+        .add(feature_july.getNumber('RB11').pow(ee.Number(2)))
+        .add(feature_july.getNumber('RB12').pow(ee.Number(2))).sqrt()
+        
+        
+        var DDD_july = AAA_july.divide(BBB_july.multiply(CCC_july))
+        
+        // make sure rounding doesn't cause number to be greater than 1
+        var TF = DDD_july.gt(ee.Number(1));
+        TF = ee.Algorithms.IsEqual(TF, ee.Number(1));
+        
+        DDD_july = ee.Algorithms.If(TF, ee.Number(1), DDD_july)
+        
+        DDD_july = ee.Number(DDD_july).acos()
+         
+      return feature_july.set('Jul_SA' , DDD_july
+        
+    )
+       .select(['PolygonName','REF_ID', 'Jul_SA'],
+              ['PolygonName','Ref_id', 'Jul_SA'])
+          
+    });
+    
+    var features_SpectralAngle_july = ComputeSpectralAngle_july.toList(fc_targ.size());
+    var polygons_SpectralAngle_july = features_SpectralAngle_july
+        .map(function (f) { 
+          return ee.Feature(f).set('geometry_type', ee.Feature(f).geometry().type()); })
+        .filter(ee.Filter.equals('geometry_type', 'Polygon'));
+    
+    var polygons_SpectralAngle_K_july = ee.FeatureCollection(polygons_SpectralAngle_july);
+    
+    print(year, 'July Target Polygons',features_SpectralAngle_july.size(),polygons_SpectralAngle_K_july.size())
+    
+    // Create unique file name 
+    var filename_july = year.cat('_SpectralAngle_July_IEQM')
+    var filename_july = filename_july.getInfo();
+    
+    Export.table.toDrive({
+        collection: polygons_SpectralAngle_K_july, 
+        description: filename_july, 
+        folder: 'GEE', 
+        fileNamePrefix: filename_july, 
+        fileFormat: 'SHP'
+    })
+  
+  
+  // AUGUST
+  ///////////////////////////////////////////////////////////
+  
+  // check if there is sentinel2 data for the month within the polygons 
+  var length_targ = ee.List(clipped_mosaic_august_targ.bandNames()).length();
+  var length_ref = ee.List(clipped_mosaic_august_ref.bandNames()).length();
+  var aug_empty = (length_targ.lt(ee.Number(1)) == 1 || length_ref.lt(ee.Number(1)))
+  aug_empty = ee.Algorithms.IsEqual(aug_empty, ee.Number(1))
+  
+    var S2_reduceRegions_Forest_Stands_august = reduceRegions_Forest_stands(clipped_mosaic_august_targ).filter(ee.Filter.neq('B2', null))
+    var S2_reduceRegions_Baseline_august = reduceRegions_Baseline(clipped_mosaic_august_ref).filter(ee.Filter.neq('RB2', null))
+    
+    var innerJoin_august = ee.Join.inner();
+    var ForestBaseline_Join_august = innerJoin_august.apply(S2_reduceRegions_Forest_Stands_august, S2_reduceRegions_Baseline_august, filterd);
+    
+    var Forest_Baseline_Joined_Data_august = ForestBaseline_Join_august.map(cleanJoin);
+    
+    var ComputeSpectralAngle_august = Forest_Baseline_Joined_Data_august.map(function (feature_august) {
+        
+        var AAA_august= feature_august.getNumber('B2').multiply(feature_august.getNumber('RB2'))
+        .add(feature_august.getNumber('B3').multiply(feature_august.getNumber('RB3')))
+        .add(feature_august.getNumber('B4').multiply(feature_august.getNumber('RB4')))
+        .add(feature_august.getNumber('B5').multiply(feature_august.getNumber('RB5')))
+        .add(feature_august.getNumber('B6').multiply(feature_august.getNumber('RB6')))
+        .add(feature_august.getNumber('B7').multiply(feature_august.getNumber('RB7')))
+        .add(feature_august.getNumber('B8').multiply(feature_august.getNumber('RB8')))
+        .add(feature_august.getNumber('B8A').multiply(feature_august.getNumber('RB8A')))
+        .add(feature_august.getNumber('B11').multiply(feature_august.getNumber('RB11')))
+        .add(feature_august.getNumber('B12').multiply(feature_august.getNumber('RB12')))
+        
+        var BBB_august = feature_august.getNumber('B2').pow(ee.Number(2)) 
+        .add(feature_august.getNumber('B3').pow(ee.Number(2)))
+        .add(feature_august.getNumber('B4').pow(ee.Number(2)))
+        .add(feature_august.getNumber('B5').pow(ee.Number(2)))
+        .add(feature_august.getNumber('B6').pow(ee.Number(2)))
+        .add(feature_august.getNumber('B7').pow(ee.Number(2)))
+        .add(feature_august.getNumber('B8').pow(ee.Number(2)))
+        .add(feature_august.getNumber('B8A').pow(ee.Number(2)))
+        .add(feature_august.getNumber('B11').pow(ee.Number(2)))
+        .add(feature_august.getNumber('B12').pow(ee.Number(2))).sqrt()
+        
+        var CCC_august= feature_august.getNumber('RB2').pow(ee.Number(2))
+        .add(feature_august.getNumber('RB3').pow(ee.Number(2)))
+        .add(feature_august.getNumber('RB4').pow(ee.Number(2)))
+        .add(feature_august.getNumber('RB5').pow(ee.Number(2)))
+        .add(feature_august.getNumber('RB6').pow(ee.Number(2)))
+        .add(feature_august.getNumber('RB7').pow(ee.Number(2)))
+        .add(feature_august.getNumber('RB8').pow(ee.Number(2)))
+        .add(feature_august.getNumber('RB8A').pow(ee.Number(2)))
+        .add(feature_august.getNumber('RB11').pow(ee.Number(2)))
+        .add(feature_august.getNumber('RB12').pow(ee.Number(2))).sqrt()
+        
+        var DDD_august = AAA_august.divide(BBB_august.multiply(CCC_august))
+        
+        var TF = DDD_august.gt(ee.Number(1));
+        TF = ee.Algorithms.IsEqual(TF, ee.Number(1));
+        
+        DDD_august = ee.Algorithms.If(TF, ee.Number(1), DDD_august);
+        
+        DDD_august = ee.Number(DDD_august).acos();
+        
+      return feature_august.set('Aug_SA' , DDD_august
+        
+    )
+       .select(['PolygonName','REF_ID','Aug_SA'],
+              ['PolygonName','Ref_id', 'Aug_SA']);
+          
+    });
+    
+    var features_SpectralAngle_august = ComputeSpectralAngle_august.toList(fc_targ.size());
+    var polygons_SpectralAngle_august = features_SpectralAngle_august
+        .map(function (f) { 
+          return ee.Feature(f).set('geometry_type', ee.Feature(f).geometry().type()); })
+        .filter(ee.Filter.equals('geometry_type', 'Polygon'));
+    
+    var polygons_SpectralAngle_K_august = ee.FeatureCollection(polygons_SpectralAngle_august);
+    
+    print(year, 'August Target Polygons',features_SpectralAngle_august.size(),polygons_SpectralAngle_K_august.size())
+   
+    // Create unique file name 
+    var filename_aug = year.cat('_SpectralAngle_August_IEQM')
+    var filename_aug = filename_aug.getInfo();
+    
+    Export.table.toDrive({
+        collection: polygons_SpectralAngle_K_august, 
+        description: filename_aug, 
+        folder: 'GEE', 
+        fileNamePrefix: filename_aug, 
+        fileFormat: 'SHP'
+    })
+  
+  // SEPTEMBER 
+  //////////////////////////////////////////////////////////////////
+  
+  // check if there is sentinel2 data for the month within the polygons 
+  var length_targ = ee.List(clipped_mosaic_september_targ.bandNames()).length();
+  var length_ref = ee.List(clipped_mosaic_september_ref.bandNames()).length();
+  var sept_empty = (length_targ.lt(ee.Number(1)) == 1 || length_ref.lt(ee.Number(1)))
+  sept_empty = ee.Algorithms.IsEqual(sept_empty, ee.Number(1))
+  
+    var S2_reduceRegions_Forest_Stands_september = reduceRegions_Forest_stands(clipped_mosaic_september_targ).filter(ee.Filter.neq('B2', null));
+    var S2_reduceRegions_Baseline_september = reduceRegions_Baseline(clipped_mosaic_september_ref).filter(ee.Filter.neq('RB2', null));
+    
+    var innerJoin_september = ee.Join.inner();
+    var ForestBaseline_Join_september = innerJoin_september.apply(S2_reduceRegions_Forest_Stands_september, S2_reduceRegions_Baseline_september, filterd);
+    
+    var Forest_Baseline_Joined_Data_september = ForestBaseline_Join_september.map(cleanJoin);
+   
+    var ComputeSpectralAngle_september = Forest_Baseline_Joined_Data_september.map(function (feature_september) {
+        
+        var AAA_september = feature_september.getNumber('B2').multiply(feature_september.getNumber('RB2'))
+        .add(feature_september.getNumber('B3').multiply(feature_september.getNumber('RB3')))
+        .add(feature_september.getNumber('B4').multiply(feature_september.getNumber('RB4')))
+        .add(feature_september.getNumber('B5').multiply(feature_september.getNumber('RB5')))
+        .add(feature_september.getNumber('B6').multiply(feature_september.getNumber('RB6')))
+        .add(feature_september.getNumber('B7').multiply(feature_september.getNumber('RB7')))
+        .add(feature_september.getNumber('B8').multiply(feature_september.getNumber('RB8')))
+        .add(feature_september.getNumber('B8A').multiply(feature_september.getNumber('RB8A')))
+        .add(feature_september.getNumber('B11').multiply(feature_september.getNumber('RB11')))
+        .add(feature_september.getNumber('B12').multiply(feature_september.getNumber('RB12')))
+        
+        var BBB_september = feature_september.getNumber('B2').pow(ee.Number(2)) 
+        .add(feature_september.getNumber('B3').pow(ee.Number(2)))
+        .add(feature_september.getNumber('B4').pow(ee.Number(2)))
+        .add(feature_september.getNumber('B5').pow(ee.Number(2)))
+        .add(feature_september.getNumber('B6').pow(ee.Number(2)))
+        .add(feature_september.getNumber('B7').pow(ee.Number(2)))
+        .add(feature_september.getNumber('B8').pow(ee.Number(2)))
+        .add(feature_september.getNumber('B8A').pow(ee.Number(2)))
+        .add(feature_september.getNumber('B11').pow(ee.Number(2)))
+        .add(feature_september.getNumber('B12').pow(ee.Number(2))).sqrt()
+        
+        var CCC_september= feature_september.getNumber('RB2').pow(ee.Number(2))
+        .add(feature_september.getNumber('RB3').pow(ee.Number(2)))
+        .add(feature_september.getNumber('RB4').pow(ee.Number(2)))
+        .add(feature_september.getNumber('RB5').pow(ee.Number(2)))
+        .add(feature_september.getNumber('RB6').pow(ee.Number(2)))
+        .add(feature_september.getNumber('RB7').pow(ee.Number(2)))
+        .add(feature_september.getNumber('RB8').pow(ee.Number(2)))
+        .add(feature_september.getNumber('RB8A').pow(ee.Number(2)))
+        .add(feature_september.getNumber('RB11').pow(ee.Number(2)))
+        .add(feature_september.getNumber('RB12').pow(ee.Number(2))).sqrt()
+        
+        
+        var DDD_september = AAA_september.divide(BBB_september.multiply(CCC_september))
+        
+        // make sure rounding doesn't cause number to be greater than 1
+        var TF = DDD_september.gt(ee.Number(1));
+        TF = ee.Algorithms.IsEqual(TF, ee.Number(1));
+        
+        DDD_september = ee.Algorithms.If(TF, ee.Number(1), DDD_september)
+        
+        DDD_september = ee.Number(DDD_september).acos()
+      
+      return feature_september.set('Sept_SA' , DDD_september
+        
+    )
+       .select(['PolygonName','REF_ID', 'Sept_SA'],
+              ['PolygonName','Ref_id', 'Sept_SA'])
+          
+    });
+    
+    var features_SpectralAngle_september = ComputeSpectralAngle_september.toList(fc_targ.size());
+    var polygons_SpectralAngle_september = features_SpectralAngle_september
+        .map(function (f) { 
+          return ee.Feature(f).set('geometry_type', ee.Feature(f).geometry().type()); })
+        .filter(ee.Filter.equals('geometry_type', 'Polygon'));
+    
+    var polygons_SpectralAngle_K_september = ee.FeatureCollection(polygons_SpectralAngle_september);
+    
+    print(year, 'September Target Polygons',features_SpectralAngle_september.size(),polygons_SpectralAngle_K_september.size())
+    
+    // Create unique file name 
+    var filename_sept = year.cat('_SpectralAngle_September_IEQM')
+    var filename_sept = filename_sept.getInfo();
+    
+    Export.table.toDrive({
+        collection: polygons_SpectralAngle_K_september, 
+        description: filename_sept, 
+        folder: 'GEE', 
+        fileNamePrefix: filename_sept, 
+        fileFormat: 'SHP'
+    })
+ 
+}

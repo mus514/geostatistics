@@ -1,0 +1,36 @@
+{
+    "name": "Perch Dev Environment",
+    "build": {
+        "dockerfile": "Dockerfile",
+        "context": "."
+    },
+    "runArgs": [
+        "--gpus", "all"
+    ],
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                // Documentation Extentions
+                "purocean.drawio-preview",
+                "redhat.vscode-yaml",
+                "yzhang.markdown-all-in-one",
+                // Docker Supporting Extensions
+                "ms-azuretools.vscode-docker",
+                "ms-vscode-remote.remote-containers",
+                // Python and Jupyter Extensions
+                "ms-python.python",
+                "ms-toolsai.jupyter",
+                // Rainbow CSV Extension
+                "mechatroner.rainbow-csv"
+            ]
+        }
+    },
+    "mounts":[
+        {
+            //"source": "${env:USERPROFILE}/Desktop/data_folder",
+            "source": "C:/Projects/2023_ECCC4_Biodiv/data",  
+            "target": "/workspaces/data_folder",
+            "type": "bind"
+        }
+    ]
+}

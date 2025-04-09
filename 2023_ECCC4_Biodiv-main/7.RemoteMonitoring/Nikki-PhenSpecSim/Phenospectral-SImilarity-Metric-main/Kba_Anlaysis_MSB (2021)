@@ -1,0 +1,8 @@
+/**** Start of imports. If edited, may not auto-convert in the playground. ****/
+var S2 = ee.ImageCollection("COPERNICUS/S2_SR"),
+    validatation = ee.FeatureCollection("users/nikkiasmoore/Validation_Anciene_7"),
+    Reference = ee.FeatureCollection("users/nikkiasmoore/reference_sites"),
+    MSB_Extent = ee.FeatureCollection("users/nikkiasmoore/aoi"),
+    Target_Ecological_Unit = ee.FeatureCollection("users/nikkiasmoore/target_sites");
+/***** End of imports. If edited, may not auto-convert in the playground. *****/
+

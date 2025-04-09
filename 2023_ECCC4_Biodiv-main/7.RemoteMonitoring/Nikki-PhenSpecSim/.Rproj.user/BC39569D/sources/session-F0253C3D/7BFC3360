@@ -1,0 +1,26 @@
+{
+    "id": "7BFC3360",
+    "path": "~/Documents/ECCC4_PhenSpecSim/R/05_analyze-spec-angle-GEE_IEQM.R",
+    "project_path": "R/05_analyze-spec-angle-GEE_IEQM.R",
+    "type": "r_source",
+    "hash": "0",
+    "contents": "",
+    "dirty": false,
+    "created": 1722349566753.0,
+    "source_on_save": false,
+    "relative_order": 4,
+    "properties": {
+        "source_window_id": "",
+        "Source": "Source",
+        "cursorPosition": "12,40",
+        "scrollLine": "4"
+    },
+    "folds": "",
+    "lastKnownWriteTime": 1722277491,
+    "encoding": "UTF-8",
+    "collab_server": "",
+    "source_window": "",
+    "last_content_update": 1722277491,
+    "read_only": false,
+    "read_only_alternatives": []
+}

@@ -1,0 +1,28 @@
+{
+    "id": "5932AD9A",
+    "path": "~/Documents/ECCC4_PhenSpecSim/Phenospectral-SImilarity-Metric-main/R/03_prep-polygon-files_coulees.R",
+    "project_path": "Phenospectral-SImilarity-Metric-main/R/03_prep-polygon-files_coulees.R",
+    "type": "r_source",
+    "hash": "0",
+    "contents": "",
+    "dirty": false,
+    "created": 1722283120985.0,
+    "source_on_save": false,
+    "relative_order": 2,
+    "properties": {
+        "tempName": "Untitled1",
+        "source_window_id": "",
+        "Source": "Source",
+        "cursorPosition": "95,0",
+        "scrollLine": "0",
+        "softWrapLines": "true"
+    },
+    "folds": "",
+    "lastKnownWriteTime": 1722281423,
+    "encoding": "UTF-8",
+    "collab_server": "",
+    "source_window": "",
+    "last_content_update": 1722281423,
+    "read_only": false,
+    "read_only_alternatives": []
+}

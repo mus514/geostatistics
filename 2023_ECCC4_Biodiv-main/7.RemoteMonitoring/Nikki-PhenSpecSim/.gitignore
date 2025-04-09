@@ -1,0 +1,11 @@
+1.BirdNET/BirdNET-Analyzer
+3.SoundEmbedding/vggish
+4.Perch/perch
+4.Perch/scenic
+TEST
+dat/
+ghtoken.txt
+notes.md
+items.json
+junk
+.DS_Store

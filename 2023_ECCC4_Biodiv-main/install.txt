@@ -1,0 +1,4 @@
+conda create --name Soundtest python=3.10
+conda activate Soundtest
+
+conda install -c conda-forge audiosegment soundfile pandas numpy

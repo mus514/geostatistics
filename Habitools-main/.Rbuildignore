@@ -1,0 +1,5 @@
+^Habitools\.Rproj$
+^\.Rproj\.user$
+^.github$
+^data-raw$
+^testing.R
